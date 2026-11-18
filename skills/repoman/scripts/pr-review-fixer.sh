@@ -150,16 +150,19 @@ if [ "$COMMAND" = "begin" ]; then
       [ "$VERBOSE" = true ] && echo "    Parsed diff_map: $line_count lines across $(echo "$DIFF_MAP" | jq 'length') files" >&2
     fi
 
-    # Build enriched PR entry
+    # Build enriched PR entry (diff_map via --rawfile: argv has a per-argument
+    # size limit, and large diffs exceed it)
+    printf '%s' "$DIFF_MAP" > "$TMPDIR/diff_map-${number}.json"
     enriched=$(jq -n \
       --arg repo "$repo" \
       --argjson number "$number" \
       --arg head_sha "$head_sha" \
-      --argjson diff_map "$DIFF_MAP" \
-      '{repo: $repo, number: $number, head_sha: $head_sha, diff_map: $diff_map}')
+      --rawfile diff_map "$TMPDIR/diff_map-${number}.json" \
+      '{repo: $repo, number: $number, head_sha: $head_sha, diff_map: $diff_map | fromjson}')
 
     # Append to output queue
-    jq --argjson entry "$enriched" '. += [$entry]' "$TMPDIR/output_queue.json" > "$TMPDIR/output_tmp.json"
+    printf '%s' "$enriched" > "$TMPDIR/enriched-${number}.json"
+    jq --slurpfile entry "$TMPDIR/enriched-${number}.json" '. += $entry' "$TMPDIR/output_queue.json" > "$TMPDIR/output_tmp.json"
     mv "$TMPDIR/output_tmp.json" "$TMPDIR/output_queue.json"
 
   done < "$TMPDIR/eligible_prs.jsonl"
