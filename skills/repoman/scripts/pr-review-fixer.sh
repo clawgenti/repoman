@@ -142,24 +142,29 @@ if [ "$COMMAND" = "begin" ]; then
     [ "$VERBOSE" = true ] && echo "    Fetching diff..." >&2
     gh pr diff "$number" --repo "$repo" > "$TMPDIR/pr-${number}.diff" 2>/dev/null || true
 
-    # Parse diff into structured map using the standalone parser
-    DIFF_MAP="[]"
+    # Parse diff into structured map using the standalone parser.
+    # The map is kept in a file, never in a shell variable: a single argv
+    # entry is capped at 128 KB (MAX_ARG_STRLEN), so passing a large map
+    # to jq via --argjson fails with "Argument list too long".
+    DIFF_MAP_FILE="$TMPDIR/pr-${number}.diffmap.json"
+    echo '[]' > "$DIFF_MAP_FILE"
     if [ -s "$TMPDIR/pr-${number}.diff" ]; then
-      DIFF_MAP=$("$SCRIPT_DIR/parse-diff-map.sh" "$TMPDIR/pr-${number}.diff")
-      line_count=$(echo "$DIFF_MAP" | jq '[.[].hunks[].lines[]] | length')
-      [ "$VERBOSE" = true ] && echo "    Parsed diff_map: $line_count lines across $(echo "$DIFF_MAP" | jq 'length') files" >&2
+      "$SCRIPT_DIR/parse-diff-map.sh" "$TMPDIR/pr-${number}.diff" > "$DIFF_MAP_FILE"
+      line_count=$(jq '[.[].hunks[].lines[]] | length' "$DIFF_MAP_FILE")
+      [ "$VERBOSE" = true ] && echo "    Parsed diff_map: $line_count lines across $(jq 'length' "$DIFF_MAP_FILE") files" >&2
     fi
 
-    # Build enriched PR entry
-    enriched=$(jq -n \
+    # Build enriched PR entry (diff_map read via --slurpfile for the same reason)
+    ENTRY_FILE="$TMPDIR/pr-${number}.entry.json"
+    jq -n \
       --arg repo "$repo" \
       --argjson number "$number" \
       --arg head_sha "$head_sha" \
-      --argjson diff_map "$DIFF_MAP" \
-      '{repo: $repo, number: $number, head_sha: $head_sha, diff_map: $diff_map}')
+      --slurpfile diff_map "$DIFF_MAP_FILE" \
+      '{repo: $repo, number: $number, head_sha: $head_sha, diff_map: $diff_map[0]}' > "$ENTRY_FILE"
 
     # Append to output queue
-    jq --argjson entry "$enriched" '. += [$entry]' "$TMPDIR/output_queue.json" > "$TMPDIR/output_tmp.json"
+    jq --slurpfile entry "$ENTRY_FILE" '. += $entry' "$TMPDIR/output_queue.json" > "$TMPDIR/output_tmp.json"
     mv "$TMPDIR/output_tmp.json" "$TMPDIR/output_queue.json"
 
   done < "$TMPDIR/eligible_prs.jsonl"
